@@ -17,22 +17,40 @@ import Maybe
 import Time
 
 
-main : Program () Model Msg
-main =
-    Browser.element
-        { init = \_ -> ( { savedTime = 0, lastTime = Nothing, startTime = Nothing, state = Paused, ratio = 0.33, history = [] }, Cmd.none )
-        , update = update
-        , subscriptions = subscriptions
-        , view = view
-        }
+
+-- TYPES
 
 
-type Msg
-    = Tick Time.Posix
-    | Select Pace
-    | StartWorking
-    | StartBreaking
-    | Pause
+type Working
+    = Working
+    | Breaking
+    | Paused
+
+
+workingLabel : Working -> String
+workingLabel w =
+    case w of
+        Working ->
+            "🛠️ Start working"
+
+        Breaking ->
+            "🏖️ Take a break"
+
+        Paused ->
+            "🔒 (Pause the timer)"
+
+
+workingColor : Working -> Color
+workingColor w =
+    case w of
+        Working ->
+            Danger
+
+        Breaking ->
+            Success
+
+        Paused ->
+            Info
 
 
 type Pace
@@ -43,10 +61,48 @@ type Pace
     | Grinding
 
 
-type Working
-    = Working
-    | Breaking
-    | Paused
+ratio : Pace -> Float
+ratio p =
+    case p of
+        Langorious ->
+            1
+
+        Relaxed ->
+            1 / 2
+
+        Standard ->
+            1 / 3
+
+        Industrious ->
+            1 / 5
+
+        Grinding ->
+            1 / 11
+
+
+description : Pace -> String
+description p =
+    case p of
+        Langorious ->
+            "Langorious (break for as long as you work)"
+
+        Relaxed ->
+            "Relaxed (spend 1/3 of your time on break)"
+
+        Standard ->
+            "Standard (spend 1/4 of your time on break)"
+
+        Industrious ->
+            "Industrious (spend 1/6 of your time on break)"
+
+        Grinding ->
+            "Grinding (spend 1/12 of your time on break)"
+
+
+type Msg
+    = Tick Time.Posix
+    | Select Pace
+    | ChangeState Working
 
 
 type alias HistoryItem =
@@ -61,9 +117,43 @@ type alias Model =
     , lastTime : Maybe Time.Posix
     , startTime : Maybe Time.Posix
     , state : Working
-    , ratio {- Between 0 and 1, indicates the percent of time worked that is saved for breaks -} : Float
+    , pace : Pace
     , history : List HistoryItem
     }
+
+
+initialModel : Model
+initialModel =
+    { savedTime = 0
+    , lastTime = Nothing
+    , startTime = Nothing
+    , state = Paused
+    , pace = Standard
+    , history = []
+    }
+
+
+
+-- MAIN
+
+
+main : Program () Model Msg
+main =
+    Browser.element
+        { init = \_ -> ( initialModel, Cmd.none )
+        , update = update
+        , subscriptions = subscriptions
+        , view = view
+        }
+
+
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Time.every 30 Tick
+
+
+
+-- UPDATE
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -79,25 +169,18 @@ yet...
 pureUpdate : Msg -> Model -> Model
 pureUpdate msg model =
     case msg of
-        Select Langorious ->
-            { model | ratio = 1 }
-
-        Select Relaxed ->
-            { model | ratio = 1 / 2 }
-
-        Select Standard ->
-            { model | ratio = 1 / 3 }
-
-        Select Industrious ->
-            { model | ratio = 1 / 5 }
-
-        Select Grinding ->
-            { model | ratio = 1 / 11 }
+        Select p ->
+            { model | pace = p }
 
         Tick currentTime ->
             case model.state of
                 Working ->
-                    updateTimes (\oldSaved oldTime -> oldSaved + timeDiff currentTime oldTime * model.ratio) currentTime model
+                    updateTimes
+                        (\oldSaved oldTime ->
+                            oldSaved + timeDiff currentTime oldTime * ratio model.pace
+                        )
+                        currentTime
+                        model
 
                 Breaking ->
                     updateTimes
@@ -119,26 +202,23 @@ pureUpdate msg model =
                 Paused ->
                     updateTimes (\oldSaved oldTime -> oldSaved) currentTime model
 
-        StartBreaking ->
-            if model.state /= Breaking then
-                { model | state = Breaking, startTime = model.lastTime, history = { state = model.state, endTime = model.lastTime, startTime = model.startTime } :: model.history }
+        ChangeState s ->
+            updateState s model
 
-            else
-                model
 
-        StartWorking ->
-            if model.state /= Working then
-                { model | state = Working, startTime = model.lastTime, history = { state = model.state, endTime = model.lastTime, startTime = model.startTime } :: model.history }
+updateState : Working -> Model -> Model
+updateState s model =
+    if model.state /= s then
+        { model
+            | state = s
+            , startTime = model.lastTime
+            , history =
+                { state = model.state, endTime = model.lastTime, startTime = model.startTime }
+                    :: model.history
+        }
 
-            else
-                model
-
-        Pause ->
-            if model.state /= Paused then
-                { model | state = Paused, startTime = model.lastTime, history = { state = model.state, endTime = model.lastTime, startTime = model.startTime } :: model.history }
-
-            else
-                model
+    else
+        model
 
 
 {-| updateTimes is a wrapper around handling the initial case in the model,
@@ -160,23 +240,8 @@ updateTimes f currentTime model =
             { model | savedTime = newSaved, lastTime = Just currentTime }
 
 
-subscriptions : Model -> Sub Msg
-subscriptions model =
-    Time.every 30 Tick
 
-
-{-| disabled is a workaround of the fact that the normal disabled function only
-affects <button> tags, but the bulma library uses <a> tags for them. This is a
-workaround that hopefully isn't broken in some subtle way.
--}
-disabled : Bool -> Html.Attribute msg
-disabled t =
-    if t then
-        attribute "disabled" ""
-
-    else
-        -- A dummy do-nothing attribute to have a value to return here
-        attribute "style" ""
+-- VIEW
 
 
 view : Model -> Html Msg
@@ -186,12 +251,12 @@ view model =
         [ stylesheet
         , level []
             [ levelItem [ textCentered ]
-                [ select [ value "Standard (spend 1/4 of your time on break)" ]
-                    [ option [ onClick (Select Langorious), selected (model.ratio == 1) ] [ text "Langorious (break for as long as you work)" ]
-                    , option [ onClick (Select Relaxed), selected (model.ratio == 1 / 2) ] [ text "Relaxed (spend 1/3 of your time on break)" ]
-                    , option [ onClick (Select Standard), selected (model.ratio == 1 / 3) ] [ text "Standard (spend 1/4 of your time on break)" ]
-                    , option [ onClick (Select Industrious), selected (model.ratio == 1 / 5) ] [ text "Industrious (spend 1/6 of your time on break)" ]
-                    , option [ onClick (Select Grinding), selected (model.ratio == 1 / 11) ] [ text "Grinding (spend 1/12 of your time on break)" ]
+                [ select []
+                    [ paceOption model Langorious
+                    , paceOption model Relaxed
+                    , paceOption model Standard
+                    , paceOption model Industrious
+                    , paceOption model Grinding
                     ]
                 ]
             ]
@@ -206,61 +271,40 @@ view model =
         , container []
             [ level
                 []
-                [ levelItem
-                    []
-                    [ button
-                        { buttonModifiers
-                            | color = Danger
-                        }
-                        [ onClick StartWorking
-                        , disabled
-                            (if model.state == Working then
-                                True
-
-                             else
-                                False
-                            )
-                        ]
-                        [ text "🛠️ Start working" ]
-                    ]
-                , levelItem
-                    []
-                    [ button
-                        { buttonModifiers
-                            | color = Success
-                        }
-                        [ onClick StartBreaking
-                        , disabled
-                            (if model.state == Breaking then
-                                True
-
-                             else
-                                False
-                            )
-                        ]
-                        [ text "🏖️ Take a break" ]
-                    ]
-                , levelItem
-                    []
-                    [ button
-                        { buttonModifiers
-                            | color = Info
-                        }
-                        [ onClick Pause
-                        , disabled
-                            (if model.state == Paused then
-                                True
-
-                             else
-                                False
-                            )
-                        ]
-                        [ text "🔒 (Pause the timer)" ]
-                    ]
+                [ levelItem [] [ stateButton model Working ]
+                , levelItem [] [ stateButton model Breaking ]
+                , levelItem [] [ stateButton model Paused ]
                 ]
             ]
         , section NotSpaced [] (hr [] [] :: List.map showHistoryItem model.history)
         ]
+
+
+paceOption : Model -> Pace -> Html Msg
+paceOption model p =
+    option
+        [ onClick (Select p)
+        , selected (model.pace == p)
+        ]
+        [ text (description p) ]
+
+
+stateButton : Model -> Working -> Html Msg
+stateButton model w =
+    button
+        { buttonModifiers
+            | color = workingColor w
+        }
+        [ onClick (ChangeState w)
+        , disabled
+            (if model.state == w then
+                True
+
+             else
+                False
+            )
+        ]
+        [ text (workingLabel w) ]
 
 
 showHistoryItem : HistoryItem -> Html Msg
@@ -278,28 +322,13 @@ showHistoryItem item =
             ]
             [ levelItem
                 []
-                [ if item.state == Working then
-                    text (Debug.toString (Maybe.map2 timeDiff item.endTime item.startTime))
-
-                  else
-                    text ""
-                ]
+                [ historyLevelItem item Working ]
             , levelItem
                 []
-                [ if item.state == Breaking then
-                    text (Debug.toString (Maybe.map2 timeDiff item.endTime item.startTime))
-
-                  else
-                    text ""
-                ]
+                [ historyLevelItem item Breaking ]
             , levelItem
                 []
-                [ if item.state == Paused then
-                    text (Debug.toString (Maybe.map2 timeDiff item.endTime item.startTime))
-
-                  else
-                    text ""
-                ]
+                [ historyLevelItem item Paused ]
             ]
         , level
             [ displayByDevice
@@ -315,6 +344,33 @@ showHistoryItem item =
                 [ text (Debug.toString (Maybe.map2 timeDiff item.endTime item.startTime)) ]
             ]
         ]
+
+
+historyLevelItem : HistoryItem -> Working -> Html msg
+historyLevelItem item state =
+    if item.state == state then
+        text (Debug.toString (Maybe.map2 timeDiff item.endTime item.startTime))
+
+    else
+        text ""
+
+
+
+-- HELPERS
+
+
+{-| disabled is a workaround of the fact that the normal disabled function only
+affects <button> tags, but the bulma library uses <a> tags for them. This is a
+workaround that hopefully isn't broken in some subtle way.
+-}
+disabled : Bool -> Html.Attribute msg
+disabled t =
+    if t then
+        attribute "disabled" ""
+
+    else
+        -- A dummy do-nothing attribute to have a value to return here
+        attribute "style" ""
 
 
 timeDiff : Time.Posix -> Time.Posix -> Float
